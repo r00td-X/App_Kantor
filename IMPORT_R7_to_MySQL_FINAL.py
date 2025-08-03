@@ -34,6 +34,44 @@ DB_CONFIG = {
 }
 KODE_KANTOR = os.getenv("KODE_KANTOR", "")
 
+user_name_map = {}
+
+def populate_user_combobox(kode_kantor):
+    global user_name_map
+    user_name_map = {}
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT nama, username FROM user WHERE ktr = %s", (kode_kantor,))
+        users_data = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        display_names = []
+        for nama, username in users_data:
+            display_names.append(nama)
+            user_name_map[nama] = username
+            
+        user_combobox['values'] = display_names
+        if display_names:
+            user_combobox.set(display_names[0])
+            on_user_select(None) # Trigger update for the first item
+        else:
+            user_combobox.set("")
+            user_display_var.set("")
+        log(f"✅ Combobox user diisi dengan {len(display_names)} nama.")
+    except Exception as e:
+        log(f"[ERROR] Gagal mengisi combobox user: {e}")
+        user_combobox['values'] = []
+        user_combobox.set("")
+        user_display_var.set("")
+
+def on_user_select(event):
+    selected_name = user_var.get()
+    username = user_name_map.get(selected_name, "")
+    user_display_var.set(username)
+    log(f"User terpilih: {selected_name} (Username: {username})")
+
 # --- Global variables for tray and background thread ---
 icon = None
 background_thread_stop = threading.Event()
@@ -80,6 +118,19 @@ date_picker_frame.pack(anchor="w", pady=(5,0))
 ttk.Label(date_picker_frame, text="Tgl NRC:", font=["-size", "10"]).pack(side="left")
 date_picker = DateEntry(date_picker_frame, bootstyle="primary", dateformat="%Y-%m-%d")
 date_picker.pack(side="left", padx=(5,0))
+
+# User Selection
+user_selection_frame = ttk.Frame(status_frame)
+user_selection_frame.pack(anchor="w", pady=(5,0))
+ttk.Label(user_selection_frame, text="Pilih User:", font=["-size", "10"]).pack(side="left")
+user_var = tk.StringVar()
+user_combobox = ttk.Combobox(user_selection_frame, textvariable=user_var, state="readonly", bootstyle="primary")
+user_combobox.pack(side="left", padx=(5,0))
+user_combobox.bind("<<ComboboxSelected>>", on_user_select)
+user_combobox.bind("<<ComboboxSelected>>", on_user_select)
+
+user_display_var = tk.StringVar(value="")
+ttk.Label(user_selection_frame, textvariable=user_display_var, font=["-size", "10", "-weight", "bold"]).pack(side="left", padx=(10,0))
 
 # Table Frame
 table_frame = ttk.Frame(main_frame)
@@ -334,6 +385,44 @@ def cek_koneksi():
         koneksi_label.config(bootstyle="danger")
         log(f"[ERROR] {e}")
 
+user_name_map = {}
+
+def populate_user_combobox(kode_kantor):
+    global user_name_map
+    user_name_map = {}
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("SELECT nama, username FROM user WHERE status2 = 'Pengantar' AND ktr = %s", (kode_kantor,))
+        users_data = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        display_names = []
+        for nama, username in users_data:
+            display_names.append(nama)
+            user_name_map[nama] = username
+            
+        user_combobox['values'] = display_names
+        if display_names:
+            user_combobox.set(display_names[0])
+            on_user_select(None) # Trigger update for the first item
+        else:
+            user_combobox.set("")
+            user_display_var.set("")
+        log(f"✅ Combobox user diisi dengan {len(display_names)} nama.")
+    except Exception as e:
+        log(f"[ERROR] Gagal mengisi combobox user: {e}")
+        user_combobox['values'] = []
+        user_combobox.set("")
+        user_display_var.set("")
+
+def on_user_select(event):
+    selected_name = user_var.get()
+    username = user_name_map.get(selected_name, "")
+    user_display_var.set(username)
+    log(f"User terpilih: {selected_name} (Username: {username})")
+
 def browse_pdf():
     filepath = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
     if not filepath:
@@ -342,6 +431,7 @@ def browse_pdf():
     tree.delete(*tree.get_children())
     label1_var.set("Manifest Kantong: -")
     label2_var.set("Kode: -")
+    user_combobox.set("") # Clear user selection
     log(f"📄 Membuka file: {filepath}")
 
     try:
@@ -353,6 +443,7 @@ def browse_pdf():
                     label1_var.set(f"Manifest Kantong: {full_text}")
                     kode = full_text.split()[-1]
                     label2_var.set(kode)
+                    populate_user_combobox(kode) # Populate combobox after kode is set
 
             all_data = []
             for page in pdf.pages:
@@ -421,8 +512,8 @@ def insert_ke_db():
                 duplikat += 1
                 continue
 
-            sql = "INSERT INTO tbl_antrn (connote, produk, ktr_antrn, tgl_nrc) VALUES (%s, %s, %s, %s)"
-            val = (no_kantong, produk, kode_label2, tgl_nrc)
+            sql = "INSERT INTO tbl_antrn (connote, produk, ktr_antrn, tgl_nrc, user_input, pic) VALUES (%s, %s, %s, %s, %s, %s)"
+            val = (no_kantong, produk, kode_label2, tgl_nrc, user_var.get(), user_display_var.get())
             cursor.execute(sql, val)
             total += 1
         
