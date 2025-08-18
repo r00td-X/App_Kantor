@@ -1,0 +1,5 @@
+ttkbootstrap
+pymysql
+pandas
+openpyxl
+python-dotenv
