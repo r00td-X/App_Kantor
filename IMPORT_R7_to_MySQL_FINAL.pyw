@@ -388,9 +388,9 @@ def insert_ke_db():
 
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True) # Gunakan dictionary=True untuk akses kolom via nama
         
-        total, pid_dilewati, duplikat = 0, 0, 0
+        total_insert, total_update, pid_dilewati, duplikat_tidak_diubah = 0, 0, 0, 0
         all_items = tree.get_children()
         progress["maximum"] = len(all_items)
         
@@ -405,28 +405,48 @@ def insert_ke_db():
                 pid_dilewati += 1
                 continue
 
-            cursor.execute("SELECT COUNT(*) FROM tbl_antrn WHERE connote=%s", (no_kantong,))
-            if cursor.fetchone()[0] > 0:
-                duplikat += 1
-                continue
+            # Cek apakah connote sudah ada dan ambil status ktr_antrn
+            cursor.execute("SELECT ktr_antrn FROM tbl_antrn WHERE connote=%s", (no_kantong,))
+            result = cursor.fetchone()
 
+            if result: # Jika connote ditemukan
+                if str(result['ktr_antrn']) == '0':
+                    # Update ktr_antrn menjadi KODE_KANTOR
+                    update_sql = "UPDATE tbl_antrn SET ktr_antrn = %s WHERE connote = %s"
+                    update_val = (KODE_KANTOR, no_kantong)
+                    cursor.execute(update_sql, update_val)
+                    total_update += 1
+                    log(f"🔄 Connote {no_kantong} ditemukan, ktr_antrn diupdate menjadi {KODE_KANTOR}.")
+                else:
+                    # ktr_antrn bukan 0, lewati
+                    duplikat_tidak_diubah += 1
+                    log(f"⏭️ Connote {no_kantong} sudah ada dengan ktr_antrn != 0, dilewati.")
+                continue
+            
+            # Jika connote tidak ditemukan, lakukan insert baru
             sql = "INSERT INTO tbl_antrn (connote, produk, ktr_antrn, tgl_nrc, pic) VALUES (%s, %s, %s, %s, %s)"
             val = (no_kantong, produk, kode_label2, tgl_nrc, user_display_var.get())
             cursor.execute(sql, val)
-            total += 1
+            total_insert += 1
         
         conn.commit()
+        cursor.close()
         conn.close()
         
-        msg = f"✅ Insert Selesai. Baru: {total}, PID dilewati: {pid_dilewati}, Duplikat: {duplikat}"
-        log(msg)
+        msg = (f"✅ Proses Selesai.\n" 
+               f"Data Baru: {total_insert}\n" 
+               f"Data Diupdate: {total_update}\n" 
+               f"Duplikat Dilewati: {duplikat_tidak_diubah}\n" 
+               f"PID Dilewati: {pid_dilewati}")
+
+        log(msg.replace('\n', ', '))
         messagebox.showinfo("Sukses", msg)
         progress["value"] = 0
         
     except Exception as e:
         log(f"[ERROR] {e}")
         traceback.print_exc()
-        messagebox.showerror("Error Database", f"Terjadi kesalahan saat insert ke DB:\n{e}")
+        messagebox.showerror("Error Database", f"Terjadi kesalahan saat proses ke DB:\n{e}")
 
 if __name__ == "__main__":
     Button(btn_frame, text="📂 Buka PDF", command=browse_pdf, bootstyle="primary").grid(row=0, column=0, sticky="ew", padx=(0, 5))
