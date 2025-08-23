@@ -1,10 +1,9 @@
-
-
 import os
 import re
 import tkinter as tk
 from tkinter import messagebox, ttk
 from ttkbootstrap import Style, ScrolledText
+from ttkbootstrap.widgets import Button
 from dotenv import load_dotenv
 import mysql.connector
 import traceback
@@ -35,8 +34,8 @@ auto_update_status_var = None
 
 # --- GUI Setup ---
 root = tk.Tk()
-root.title("Antaran Updater Status")
-root.geometry("700x500")
+root.title("Antaran Updater Status v2") # Added v2 to title
+root.geometry("700x550") # Adjusted height
 style = Style("cosmo")
 
 main_frame = ttk.Frame(root, padding="10")
@@ -48,10 +47,15 @@ status_frame.pack(fill=tk.X, pady=(0, 10))
 
 label_koneksi_var = tk.StringVar(value="Status Koneksi: ❓")
 auto_update_status_var = tk.StringVar(value="Auto-Update: Menunggu...")
+antrn_count_var = tk.StringVar(value="Data Siap Update (tbl_antrn): -")
+retfs_count_var = tk.StringVar(value="Data Siap Update (antrn_tblretfs): -")
 
 koneksi_label = ttk.Label(status_frame, textvariable=label_koneksi_var, font=["-size", "10"])
 koneksi_label.pack(anchor="w")
 ttk.Label(status_frame, textvariable=auto_update_status_var, font=["-size", "10"]).pack(anchor="w", pady=(5,0))
+ttk.Label(status_frame, textvariable=antrn_count_var, font=["-size", "10", "-weight", "bold"]).pack(anchor="w", pady=(5,0))
+ttk.Label(status_frame, textvariable=retfs_count_var, font=["-size", "10", "-weight", "bold"]).pack(anchor="w", pady=(5,0))
+
 
 # Log Frame
 log_frame = ttk.Labelframe(main_frame, text="Log Aktivitas", padding="10")
@@ -60,14 +64,29 @@ log_frame.pack(fill=tk.BOTH, expand=True)
 log_text = ScrolledText(log_frame, height=10, font=("Consolas", 9), wrap=tk.WORD)
 log_text.pack(fill=tk.BOTH, expand=True)
 
+# Progress Bar Frame
+progress_frame = ttk.Frame(main_frame)
+progress_frame.pack(fill=tk.X, pady=(5, 5))
+
+progress_label_var = tk.StringVar()
+ttk.Label(progress_frame, textvariable=progress_label_var, font=["-size", "9"]).pack(side=tk.LEFT, anchor="w")
+
+progress = ttk.Progressbar(progress_frame, mode="determinate")
+progress.pack(fill=tk.X, expand=True, side=tk.LEFT, padx=5)
+
+
+# Button Frame
+btn_frame = ttk.Frame(main_frame)
+btn_frame.pack(fill=tk.X)
+btn_frame.columnconfigure((0, 1, 2), weight=1)
+
 def log(msg):
     root.after(0, lambda: _log_to_widget(msg))
 
 def _log_to_widget(msg):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_text.insert('end', f"[{now}] {msg} ")
+    log_text.insert('end', f"[{now}] {msg}\n")
     log_text.see('end')
-
 
 def parse_and_format_date(date_str):
     if not date_str:
@@ -88,11 +107,16 @@ def _perform_scraping_and_update(connotes_to_scrap, is_manual_run=False):
         return 0, 0
 
     log(f"🔍 Ditemukan {len(connotes_to_scrap)} connote untuk diproses.")
-    
+    progress["maximum"] = len(connotes_to_scrap)
+
     conn = mysql.connector.connect(**DB_CONFIG)
     update_cursor = conn.cursor()
 
     for i, row in enumerate(connotes_to_scrap):
+        progress["value"] = i + 1
+        progress_label_var.set(f"Memproses {i + 1}/{len(connotes_to_scrap)}...")
+        root.update_idletasks()
+
         if background_thread_stop.is_set():
             log("🛑 Proses update dihentikan.")
             break
@@ -159,7 +183,6 @@ def _perform_scraping_and_update(connotes_to_scrap, is_manual_run=False):
                 if 'st' not in data_to_update:
                     data_to_update['st'] = '33'
                 
-                # Update tbl_antrn dengan kriteria baru
                 set_clauses = ", ".join([f"{key}=%s" for key in data_to_update.keys()])
                 sql_update_antrn = (f"UPDATE tbl_antrn SET {set_clauses} "
                                     f"WHERE connote = %s AND ktr_antrn = %s AND "
@@ -174,9 +197,7 @@ def _perform_scraping_and_update(connotes_to_scrap, is_manual_run=False):
                     log(f"  ✅ Data untuk {connote} berhasil diupdate di tbl_antrn.")
                     updated_count += 1
 
-                    # --- UPDATE antrn_tblretfs DENGAN KRITERIA LENGKAP ---
                     if 'lok_akhir' in data_to_update and KODE_KANTOR:
-                        # Cek dulu apakah ada data yang perlu diupdate
                         select_sql_retfs = ( "SELECT 1 FROM antrn_tblretfs "
                                            "WHERE connote_rf = %s AND ktr_rf = %s AND "
                                            "(lok_akhir_rf = %s OR lok_akhir_rf = '' OR lok_akhir_rf IS NULL) LIMIT 1" )
@@ -195,10 +216,9 @@ def _perform_scraping_and_update(connotes_to_scrap, is_manual_run=False):
 
                             if update_cursor.rowcount > 0:
                                 log(f"    ✅ lok_akhir_rf untuk {connote} berhasil diupdate menjadi {data_to_update['lok_akhir']}.")
-                    # --- AKHIR UPDATE ---
-                else:
-                    log(f"  ⚠️ Tidak ada data valid yang diekstrak untuk {connote}.")
-                    failed_count += 1
+            else:
+                log(f"  ⚠️ Tidak ada data valid yang diekstrak untuk {connote}.")
+                failed_count += 1
 
         except requests.exceptions.RequestException as e:
             log(f"  ❌ Gagal mengambil data untuk {connote}. Error: {e}")
@@ -208,11 +228,12 @@ def _perform_scraping_and_update(connotes_to_scrap, is_manual_run=False):
             traceback.print_exc()
             failed_count += 1
     
-    conn.commit() # Commit semua perubahan setelah loop selesai
+    conn.commit()
     update_cursor.close()
     conn.close()
+    progress["value"] = 0
+    progress_label_var.set("")
     return updated_count, failed_count
-
 
 def _background_update_task():
     log("⚙️ Auto-update thread dimulai.")
@@ -223,7 +244,6 @@ def _background_update_task():
             
             conn = mysql.connector.connect(**DB_CONFIG)
             cursor = conn.cursor(dictionary=True)
-            # Update st 33 (proses)
             cursor.execute("SELECT connote FROM tbl_antrn WHERE st = '0' OR st = '33' OR status = 'FAILEDTODELIVERED'")
             connotes_to_update = cursor.fetchall()
             cursor.close()
@@ -231,9 +251,9 @@ def _background_update_task():
 
             if connotes_to_update:
                 updated, failed = _perform_scraping_and_update(connotes_to_update)
-                log(f"🤖 Auto-Update (st=33) Selesai. Berhasil: {updated}, Gagal: {failed}")
+                log(f"🤖 Auto-Update Selesai. Berhasil: {updated}, Gagal: {failed}")
             else:
-                log("🤖 Auto-Update: Tidak ada data (st=33) untuk diperbarui.")
+                log("🤖 Auto-Update: Tidak ada data untuk diperbarui.")
 
             next_run_time = datetime.now() + timedelta(minutes=30)
             status_msg = f"Auto-Update: Idle. Cek berikutnya: {next_run_time.strftime('%H:%M:%S')}"
@@ -251,7 +271,7 @@ def _background_update_task():
     log("🛑 Auto-update thread dihentikan.")
 
 def run_manual_update():
-    if messagebox.askyesno("Konfirmasi Update Manual", "Proses ini akan mengambil data baru (st=0) dari internet dan mengupdatenya. Lanjutkan?"):
+    if messagebox.askyesno("Konfirmasi Update Manual", "Proses ini akan menjalankan update berdasarkan data yang ada di database. Lanjutkan?"):
         def run():
             try:
                 log("🚀 Memulai proses update manual...")
@@ -263,7 +283,7 @@ def run_manual_update():
                 conn.close()
                 
                 if not connotes_to_scrap:
-                    log("✅ Tidak ada data baru (st=0) untuk di-scrap.")
+                    log("✅ Tidak ada data baru untuk di-scrap.")
                     messagebox.showinfo("Selesai", "Tidak ada data baru untuk di-scrap.")
                     return
 
@@ -276,6 +296,9 @@ def run_manual_update():
                 log(f"[ERROR] Terjadi kesalahan fatal saat update manual: {e}")
                 traceback.print_exc()
                 messagebox.showerror("Error Update", f"Terjadi kesalahan fatal:\n{e}")
+            finally:
+                progress["value"] = 0
+                progress_label_var.set("")
         
         threading.Thread(target=run, daemon=True).start()
 
@@ -296,6 +319,40 @@ def cek_koneksi():
         koneksi_label.config(bootstyle="danger")
         log(f"[ERROR] Gagal koneksi DB: {e}")
 
+def check_data_to_update():
+    log("🔍 Memeriksa data yang akan diupdate...")
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+
+        # Hitung tbl_antrn
+        antrn_query = "SELECT COUNT(*) FROM tbl_antrn WHERE st = '0' OR st = '33' OR status = 'FAILEDTODELIVERED'"
+        cursor.execute(antrn_query)
+        antrn_count = cursor.fetchone()[0]
+        antrn_count_var.set(f"Data Siap Update (tbl_antrn): {antrn_count}")
+        log(f"  📊 Ditemukan {antrn_count} data di tbl_antrn yang siap diupdate.")
+
+        # Hitung antrn_tblretfs
+        if not KODE_KANTOR:
+            log("⚠️ KODE_KANTOR tidak diset, pengecekan antrn_tblretfs dilewati.")
+            retfs_count_var.set("Data Siap Update (antrn_tblretfs): KODE_KANTOR kosong")
+            retfs_count = "N/A"
+        else:
+            retfs_query = ( "SELECT COUNT(*) FROM antrn_tblretfs "
+                          "WHERE ktr_rf = %s AND (lok_akhir_rf = %s OR lok_akhir_rf = '' OR lok_akhir_rf IS NULL)" )
+            cursor.execute(retfs_query, (KODE_KANTOR, KODE_KANTOR))
+            retfs_count = cursor.fetchone()[0]
+            retfs_count_var.set(f"Data Siap Update (antrn_tblretfs): {retfs_count}")
+            log(f"  📊 Ditemukan {retfs_count} data di antrn_tblretfs yang siap diupdate.")
+
+        cursor.close()
+        conn.close()
+        messagebox.showinfo("Pengecekan Selesai", f"Pengecekan data selesai.\n- tbl_antrn: {antrn_count}\n- antrn_tblretfs: {retfs_count}")
+
+    except Exception as e:
+        log(f"[ERROR] Gagal memeriksa data: {e}")
+        messagebox.showerror("Error Pengecekan", f"Gagal memeriksa data:\n{e}")
+
 # --- System Tray Functions ---
 
 def toggle_window(icon=None, item=None):
@@ -308,9 +365,11 @@ def toggle_window(icon=None, item=None):
 
 def run_manual_update_thread():
     log("▶️ Update manual dari tray menu dijalankan.")
-    # Since the update function can show message boxes, it's better to run it in the main thread context if possible
-    # or ensure it's handled correctly. For now, direct call in a new thread is fine.
     threading.Thread(target=run_manual_update, daemon=True).start()
+
+def check_data_to_update_thread():
+    log("📊 Pengecekan data dari tray menu dijalankan.")
+    threading.Thread(target=check_data_to_update, daemon=True).start()
 
 def quit_app(icon, item):
     log("👋 Aplikasi akan ditutup.")
@@ -323,18 +382,17 @@ def quit_app(icon, item):
 def setup_tray():
     global icon
     try:
-        # Use an absolute path to be safe
         base_dir = os.path.dirname(os.path.abspath(__file__))
         icon_path = os.path.join(base_dir, "icon.png")
         image = Image.open(icon_path)
     except FileNotFoundError:
         log("⚠️ File 'icon.png' tidak ditemukan. Menggunakan ikon default.")
-        # Create a simple black square as a fallback icon
         image = Image.new('RGB', (64, 64), 'black')
 
     menu = (
         pystray.MenuItem('Tampilkan', lambda: toggle_window(), default=True),
-        pystray.MenuItem('Jalankan Update Manual', lambda: run_manual_update()),
+        pystray.MenuItem('Jalankan Update Manual', run_manual_update_thread),
+        pystray.MenuItem('Cek Data Update', check_data_to_update_thread),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem('Keluar', quit_app)
     )
@@ -348,6 +406,10 @@ def on_closing():
         root.withdraw()
 
 if __name__ == "__main__":
+    Button(btn_frame, text="🔄 Cek Koneksi", command=cek_koneksi, bootstyle="info").grid(row=0, column=0, sticky="ew", padx=(0, 5))
+    Button(btn_frame, text="📊 Cek Data Update", command=check_data_to_update, bootstyle="secondary").grid(row=0, column=1, sticky="ew", padx=5)
+    Button(btn_frame, text="▶️ Jalankan Update Manual", command=run_manual_update, bootstyle="success").grid(row=0, column=2, sticky="ew", padx=(5, 0))
+    
     cek_koneksi()
     
     update_thread = threading.Thread(target=_background_update_task, daemon=True)
