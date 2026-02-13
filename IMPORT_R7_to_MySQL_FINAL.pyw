@@ -18,6 +18,7 @@ from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import threading
+import base64
 
 # Load .env
 load_dotenv()
@@ -154,60 +155,80 @@ def _perform_scraping_and_update(connotes_to_scrap):
         connote = row['connote']
         log(f"🔄 Memproses connote: {connote}")
         
-        url = f"https://kibana.posindonesia.co.id:4433/x123449/3.php?id={connote}&6f017f90-f299-11ec-988f-6f1763dc6f47xdsdkjshhsahsaksasjsaasldsllsdjldsjsbdaksdslssjasjaa"
-        
         try:
-            response = requests.get(url, timeout=15, verify=False)
+            encoded_connote = base64.urlsafe_b64encode(connote.encode()).decode('ascii')
+            url = f"https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id={encoded_connote}"
+            
+            response = requests.get(url, timeout=15)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
+            content = response.text
+            soup = BeautifulSoup(content, "html.parser")
             
             data_to_update = {}
 
-            tgl_kirim_th = soup.find("th", string=re.compile(r"^\s*Tanggal Kirim\s*$"))
-            if tgl_kirim_th and tgl_kirim_th.find_next_sibling("td"):
-                tgl_kirim_raw = tgl_kirim_th.find_next_sibling("td").text.strip()
+            # Helper function to find a value by its table header
+            def get_value_from_table(header_text):
+                header_tag = soup.find(lambda tag: tag.name == "td" and header_text in tag.get_text(strip=True))
+                if header_tag and header_tag.find_next_sibling("td"):
+                    return header_tag.find_next_sibling("td").get_text(separator=' ', strip=True)
+                return None
+
+            # Tanggal Kirim
+            tgl_kirim_raw = get_value_from_table("Tanggal Kirim")
+            if tgl_kirim_raw:
                 data_to_update['tgl_kirim'] = parse_and_format_date(tgl_kirim_raw)
 
-            pengirim_th = soup.find("th", string=re.compile(r"^\s*Pengirim\s*$"))
-            if pengirim_th and pengirim_th.find_next_sibling("td"):
-                pengirim_full = pengirim_th.find_next_sibling("td").text.strip()
-                data_to_update['pgrm'] = pengirim_full.split(',')[0].strip()
+            # Pengirim
+            pengirim_full = get_value_from_table("Pengirim")
+            if pengirim_full:
+                data_to_update['pgrm'] = pengirim_full.split(';')[0].strip()
 
-            penerima_th = soup.find("th", string=re.compile(r"^\s*Penerima\s*$"))
-            if penerima_th and penerima_th.find_next_sibling("td"):
-                penerima_full = penerima_th.find_next_sibling("td").text.strip()
-                data_to_update['pnrm'] = penerima_full.split(',')[0].strip()
-                if 'Alamat :' in penerima_full:
-                    data_to_update['al_pnrm'] = penerima_full.split('Alamat :')[-1].strip()
+            # Penerima
+            penerima_full = get_value_from_table("Penerima")
+            if penerima_full:
+                parts = [p.strip() for p in penerima_full.split(';')]
+                if parts:
+                    data_to_update['pnrm'] = parts[0]
+                    # Attempt to reconstruct address from parts after the first (name) and second (potential phone)
+                    if len(parts) > 2:
+                        data_to_update['al_pnrm'] = ' '.join(parts[2:]).strip()
+                    elif len(parts) == 2:
+                         # If only two parts, the second might be the address
+                         data_to_update['al_pnrm'] = parts[1]
 
-            status_akhir_th = soup.find("th", string=re.compile(r"^\s*STATUS AKHIR\s*$"))
-            if status_akhir_th and status_akhir_th.find_next_sibling("td"):
-                status_full = status_akhir_th.find_next_sibling("td").text.strip()
-                status_text = status_full.split(' Di ')[0].strip()
-                data_to_update['status'] = status_text
-                
-                if "DELIVERED" in status_text.upper():
-                    data_to_update['st'] = '99'
 
-                lokasi_part = status_full.split(',')[0]
-                kodepos_match = re.search(r"\b(\d{5})\b", lokasi_part)
+            # STATUS AKHIR
+            status_full = get_value_from_table("STATUS AKHIR")
+            if status_full:
+                status_match = re.search(r"^(\w+)", status_full)
+                if status_match:
+                    status_text = status_match.group(1).strip()
+                    data_to_update['status'] = status_text
+                    if "DELIVERED" in status_text.upper():
+                        data_to_update['st'] = '99'
+
+                tgl_match = re.search(r"Tanggal\s*:\s*(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2})", status_full, re.IGNORECASE)
+                if tgl_match:
+                    data_to_update['tgl_proses'] = parse_and_format_date(tgl_match.group(1))
+
+                kodepos_match = re.search(r"\b(\d{5})\b", status_full)
                 if kodepos_match:
                     data_to_update['lok_akhir'] = kodepos_match.group(1)
 
-                date_match = re.search(r"tgl\s*:\s*(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2})", status_full)
-                if date_match:
-                    data_to_update['tgl_proses'] = parse_and_format_date(date_match.group(1))
-            
-            cod_th = soup.find("th", string=re.compile(r"^\s*COD/NON COD\s*$"))
-            if cod_th and cod_th.find_next_sibling("td"):
-                cod_full = cod_th.find_next_sibling("td").text.strip()
-                data_to_update['cod'] = cod_full.split('Nilai Cod :')[0].strip()
-                match = re.search(r"Nilai Cod\s*:\s*([0-9,.]*)", cod_full)
-                if match:
-                    bsu_cod_raw = match.group(1).strip().replace(',', '').replace('.', '')
-                    data_to_update['bsu_cod'] = int(bsu_cod_raw) if bsu_cod_raw.isdigit() else 0
-                else:
+            # COD/NON COD
+            cod_full = get_value_from_table("COD/NON COD")
+            if cod_full:
+                if "NON-COD" in cod_full.upper():
+                    data_to_update['cod'] = 'NON-COD'
                     data_to_update['bsu_cod'] = 0
+                else:
+                    data_to_update['cod'] = 'COD'
+                    cod_match = re.search(r"Total COD\s*:\s*([0-9,.]+)", cod_full, re.IGNORECASE)
+                    if cod_match:
+                        bsu_cod_raw = cod_match.group(1).strip().replace(',', '').replace('.', '')
+                        data_to_update['bsu_cod'] = int(bsu_cod_raw) if bsu_cod_raw.isdigit() else 0
+                    else:
+                        data_to_update['bsu_cod'] = 0
 
             if data_to_update:
                 if 'st' not in data_to_update:
@@ -238,6 +259,97 @@ def _perform_scraping_and_update(connotes_to_scrap):
     conn.close()
     progress["value"] = 0
     return updated_count, failed_count
+
+# --- SLA Update Functions ---
+def get_sla_from_web(connote):
+    """Scrapes the SLA value for a given connote."""
+    try:
+        encoded_connote = base64.urlsafe_b64encode(connote.encode()).decode('ascii')
+        url = f"https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id={encoded_connote}"
+        
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+
+        match = re.search(r"SLA\s*:\s*(\d+)\s*hari", response.text)
+        if match:
+            sla_value = int(match.group(1))
+            log(f"SUCCESS: Connote {connote} -> SLA: {sla_value}")
+            return sla_value
+        else:
+            log(f"INFO: SLA value not found for connote {connote}")
+            return None
+    except requests.exceptions.RequestException as e:
+        log(f"ERROR: Could not fetch SLA for connote {connote}. Reason: {e}")
+        return None
+
+def _perform_sla_update():
+    """Main function to run the SLA update process."""
+    updated_count = 0
+    
+    log("🚀 Starting SLA update process...")
+    conn = None # Initialize conn to None
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        log("INFO: Database connection successful for SLA update.")
+        
+        with conn.cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT connote FROM tbl_antrn WHERE sla = '0' AND status <> 'DELIVERED'")
+            connotes = cursor.fetchall()
+
+        if not connotes:
+            log("✅ No connotes to process with sla = '0'.")
+            return 0
+            
+        total_connotes = len(connotes)
+        log(f"Found {total_connotes} connote(s) to process for SLA update.")
+        progress["maximum"] = total_connotes
+
+        for i, row in enumerate(connotes):
+            progress["value"] = i + 1
+            root.update_idletasks()
+
+            connote = row['connote']
+            sla = get_sla_from_web(connote)
+            if sla is not None:
+                with conn.cursor() as cursor_update:
+                    sql = "UPDATE tbl_antrn SET sla = %s WHERE connote = %s"
+                    cursor_update.execute(sql, (sla, connote))
+                conn.commit()
+                updated_count += 1
+        
+        log(f"🎉 SLA update process finished. {updated_count} records updated.")
+        return updated_count
+
+    except mysql.connector.Error as e:
+        log(f"ERROR: Error during SLA update: {e}")
+        if conn and conn.is_connected():
+            conn.rollback()
+        return updated_count # Return count even if there was an error
+    except Exception as e:
+        log(f"FATAL_ERROR: An unexpected error occurred during SLA update: {e}")
+        traceback.print_exc()
+        return updated_count # Return count even if there was an error
+    finally:
+        if conn and conn.is_connected():
+            conn.close()
+        progress["value"] = 0
+
+
+def jalankan_update_sla():
+    if messagebox.askyesno("Konfirmasi Update SLA", "Proses ini akan mencari dan mengupdate SLA untuk data yang membutuhkan. Lanjutkan?"):
+        def run():
+            try:
+                updated_count = _perform_sla_update()
+                messagebox.showinfo("Selesai", f"Proses update SLA selesai.\nTotal {updated_count} data diupdate.")
+            except Exception as e:
+                log(f"[ERROR] Terjadi kesalahan fatal saat update SLA: {e}")
+                traceback.print_exc()
+                messagebox.showerror("Error Update SLA", f"Terjadi kesalahan fatal:\n{e}")
+            finally:
+                progress["value"] = 0
+        
+        threading.Thread(target=run, daemon=True).start()
+
 
 def jalankan_scrap_awal():
     if messagebox.askyesno("Konfirmasi Scrap Awal", "Proses ini akan mengambil data baru (st=0) dari internet. Lanjutkan?"):
@@ -453,6 +565,8 @@ if __name__ == "__main__":
     Button(btn_frame, text="⬇️ Insert ke Database", command=insert_ke_db, bootstyle="success").grid(row=0, column=1, sticky="ew", padx=5)
     Button(btn_frame, text="▶️ Jalankan Scrap Awal", command=jalankan_scrap_awal, bootstyle="warning").grid(row=0, column=2, sticky="ew", padx=5)
     Button(btn_frame, text="🔄 Cek Koneksi", command=cek_koneksi, bootstyle="info").grid(row=0, column=3, sticky="ew", padx=(5, 0))
+    # Add the new button in a new row
+    Button(btn_frame, text="🔄 Update SLA", command=jalankan_update_sla, bootstyle="secondary").grid(row=1, column=0, columnspan=4, sticky="ew", padx=(0, 0), pady=(10,0))
     
     user_combobox.bind("<<ComboboxSelected>>", on_user_select)
 

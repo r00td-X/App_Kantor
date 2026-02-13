@@ -124,60 +124,40 @@ def _perform_scraping_and_update(connotes_to_scrap, is_manual_run=False):
         connote = row['connote']
         log(f"🔄 Memproses connote: {connote}")
         
-        url = f"https://kibana.posindonesia.co.id:4433/x123449/3.php?id={connote}&6f017f90-f299-11ec-988f-6f1763dc6f47xdsdkjshhsahsaksasjsaasldsllsdjldsjsbdaksdslssjasjaa"
-        
         try:
-            response = requests.get(url, timeout=15, verify=False)
+            import base64
+            encoded_connote = base64.urlsafe_b64encode(connote.encode()).decode('ascii')
+            url = f"https://pid.posindonesia.co.id/lacak/admin/detail_lacak_banyak.php?id={encoded_connote}"
+            
+            response = requests.get(url, timeout=15)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
+            content = response.text
+            soup = BeautifulSoup(content, "html.parser")
             
             data_to_update = {}
 
-            tgl_kirim_th = soup.find("th", string=re.compile(r"^\s*Tanggal Kirim\s*$"))
-            if tgl_kirim_th and tgl_kirim_th.find_next_sibling("td"):
-                tgl_kirim_raw = tgl_kirim_th.find_next_sibling("td").text.strip()
-                data_to_update['tgl_kirim'] = parse_and_format_date(tgl_kirim_raw)
+            def get_value_from_table(header_text):
+                header_tag = soup.find(lambda tag: tag.name == "td" and header_text in tag.get_text(strip=True))
+                if header_tag and header_tag.find_next_sibling("td"):
+                    return header_tag.find_next_sibling("td").get_text(separator=' ', strip=True)
+                return None
 
-            pengirim_th = soup.find("th", string=re.compile(r"^\s*Pengirim\s*$"))
-            if pengirim_th and pengirim_th.find_next_sibling("td"):
-                pengirim_full = pengirim_th.find_next_sibling("td").text.strip()
-                data_to_update['pgrm'] = pengirim_full.split(',')[0].strip()
+            status_full = get_value_from_table("STATUS AKHIR")
+            if status_full:
+                status_match = re.search(r"^(\w+)", status_full)
+                if status_match:
+                    status_text = status_match.group(1).strip()
+                    data_to_update['status'] = status_text
+                    if "DELIVERED" in status_text.upper():
+                        data_to_update['st'] = '99'
 
-            penerima_th = soup.find("th", string=re.compile(r"^\s*Penerima\s*$"))
-            if penerima_th and penerima_th.find_next_sibling("td"):
-                penerima_full = penerima_th.find_next_sibling("td").text.strip()
-                data_to_update['pnrm'] = penerima_full.split(',')[0].strip()
-                if 'Alamat :' in penerima_full:
-                    data_to_update['al_pnrm'] = penerima_full.split('Alamat :')[-1].strip()
+                tgl_match = re.search(r"Tanggal\s*:\s*(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2})", status_full, re.IGNORECASE)
+                if tgl_match:
+                    data_to_update['tgl_proses'] = parse_and_format_date(tgl_match.group(1))
 
-            status_akhir_th = soup.find("th", string=re.compile(r"^\s*STATUS AKHIR\s*$"))
-            if status_akhir_th and status_akhir_th.find_next_sibling("td"):
-                status_full = status_akhir_th.find_next_sibling("td").text.strip()
-                status_text = status_full.split(' Di ')[0].strip()
-                data_to_update['status'] = status_text
-                
-                if "DELIVERED" in status_text.upper():
-                    data_to_update['st'] = '99'
-
-                lokasi_part = status_full.split(',')[0]
-                kodepos_match = re.search(r"\b(\d{5})\b", lokasi_part)
+                kodepos_match = re.search(r"\b(\d{5})\b", status_full)
                 if kodepos_match:
                     data_to_update['lok_akhir'] = kodepos_match.group(1)
-
-                date_match = re.search(r"tgl\s*:\s*(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2})", status_full)
-                if date_match:
-                    data_to_update['tgl_proses'] = parse_and_format_date(date_match.group(1))
-            
-            cod_th = soup.find("th", string=re.compile(r"^\s*COD/NON COD\s*$"))
-            if cod_th and cod_th.find_next_sibling("td"):
-                cod_full = cod_th.find_next_sibling("td").text.strip()
-                data_to_update['cod'] = cod_full.split('Nilai Cod :')[0].strip()
-                match = re.search(r"Nilai Cod\s*:\s*([0-9,.]*)", cod_full)
-                if match:
-                    bsu_cod_raw = match.group(1).strip().replace(',', '').replace('.', '')
-                    data_to_update['bsu_cod'] = int(bsu_cod_raw) if bsu_cod_raw.isdigit() else 0
-                else:
-                    data_to_update['bsu_cod'] = 0
 
             if data_to_update:
                 if 'st' not in data_to_update:
@@ -185,11 +165,10 @@ def _perform_scraping_and_update(connotes_to_scrap, is_manual_run=False):
                 
                 set_clauses = ", ".join([f"{key}=%s" for key in data_to_update.keys()])
                 sql_update_antrn = (f"UPDATE tbl_antrn SET {set_clauses} "
-                                    f"WHERE connote = %s AND ktr_antrn = %s AND "
-                                    f"(lok_akhir = %s OR lok_akhir = '' OR lok_akhir IS NULL OR lok_akhir = '0') AND st = '33'")
+                                    f"WHERE connote = %s AND ktr_antrn = %s AND status NOT IN ('DELIVERED', 'DELIVERED (RETURN DELIVERY)')")
                 
                 update_values = list(data_to_update.values())
-                update_values.extend([connote, KODE_KANTOR, KODE_KANTOR])
+                update_values.extend([connote, KODE_KANTOR])
                 
                 update_cursor.execute(sql_update_antrn, tuple(update_values))
                 
